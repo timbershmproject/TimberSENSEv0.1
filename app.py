@@ -207,12 +207,11 @@ def apply_days_axis(fig: go.Figure, times: pd.Series):
     t0 = t.min()
     step = max(1, int(len(t) / 8))
     tickvals = t[::step]
-    # Conflict resolution choice: keep primary timestamp axis at bottom and derived elapsed-days axis on top.
     fig.update_layout(
-        xaxis=dict(title="Time", side="bottom"),
+        xaxis=dict(title="Time", side="top"),
         xaxis2=dict(
             overlaying="x",
-            side="top",
+            side="bottom",
             tickmode="array",
             tickvals=tickvals,
             ticktext=[f"{((x - t0).total_seconds() / 86400):.1f}" for x in tickvals],
@@ -417,17 +416,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-left_logo_bytes = st.session_state.get("left_logo_bytes")
-right_logo_bytes = st.session_state.get("right_logo_bytes")
-if left_logo_bytes is not None or right_logo_bytes is not None:
-    lg1, lg_mid, lg2 = st.columns([1, 6, 1])
-    with lg1:
-        if left_logo_bytes is not None:
-            st.image(left_logo_bytes, use_container_width=True)
-    with lg2:
-        if right_logo_bytes is not None:
-            st.image(right_logo_bytes, use_container_width=True)
-
 st.caption(f"Active DAQ: {st.session_state.get('daq_name', 'N/A')} • DAQ Serial: {st.session_state.get('daq_serial', 'N/A')}")
 
 # ------------------------------------------------------------
@@ -458,14 +446,6 @@ if not st.session_state.is_authenticated:
 st.sidebar.header("0) Pre-flight checklist")
 daq_name = st.sidebar.text_input("DAQ model / ID", value=st.session_state.get("daq_name", "A3 Wireless 9753"))
 daq_serial = st.sidebar.text_input("DAQ serial number", value=st.session_state.get("daq_serial", ""))
-
-left_logo = st.sidebar.file_uploader("Header logo (left)", type=["png", "jpg", "jpeg", "svg"], key="left_logo_upload")
-right_logo = st.sidebar.file_uploader("Header logo (right)", type=["png", "jpg", "jpeg", "svg"], key="right_logo_upload")
-
-if left_logo is not None:
-    st.session_state["left_logo_bytes"] = left_logo.getvalue()
-if right_logo is not None:
-    st.session_state["right_logo_bytes"] = right_logo.getvalue()
 
 channel_config = {}
 for ch in range(17, 25):
