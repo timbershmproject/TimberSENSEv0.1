@@ -207,6 +207,7 @@ def apply_days_axis(fig: go.Figure, times: pd.Series):
     t0 = t.min()
     step = max(1, int(len(t) / 8))
     tickvals = t[::step]
+    # Conflict resolution choice: keep primary timestamp axis at bottom and derived elapsed-days axis on top.
     fig.update_layout(
         xaxis=dict(title="Time", side="bottom"),
         xaxis2=dict(
