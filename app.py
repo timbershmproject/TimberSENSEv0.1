@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
+from plotly.colors import qualitative
 
 # ------------------------------------------------------------
 # Premium UI styling (white theme, subtle timber accents)
@@ -149,6 +150,23 @@ COLOR = {
     "UNK":  "#0f172a",
 }
 
+LINE_DASHES = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
+
+SENSOR_OPTIONS = [
+    "MF52 Temperature",
+    "PMM on-board temp",
+    "PMM MC",
+    "RH",
+    "CO2 2000",
+    "CO2 5000",
+    "SPOT",
+    "Battery",
+    "Aux",
+    "Custom",
+]
+
+STANDARD_COLOR_CYCLE = qualitative.Safe + qualitative.Dark24
+
 # Threshold colors (your request)
 THR_COL = {
     "mc_baseline": "rgba(22,101,52,0.80)",  # green
@@ -170,8 +188,39 @@ DEFAULT_THRESHOLDS = {
 # Helpers
 # ------------------------------------------------------------
 def label_for_input(inp: int):
+    channel_cfg = st.session_state.get("channel_config", {})
+    if int(inp) in channel_cfg:
+        cfg = channel_cfg[int(inp)]
+        return cfg.get("name", f"Input {int(inp)}"), cfg.get("unit", ""), cfg.get("group", "AUX")
     meta = SENSOR_MAP.get(int(inp), {"name": f"Input {int(inp)}", "unit": "", "group": "UNK"})
     return meta["name"], meta["unit"], meta.get("group", "UNK")
+
+def color_for_input(inp: int, group: str = "UNK"):
+    if int(inp) in SENSOR_MAP and SENSOR_MAP[int(inp)].get("group") in COLOR:
+        return COLOR[SENSOR_MAP[int(inp)]["group"]]
+    return STANDARD_COLOR_CYCLE[int(inp) % len(STANDARD_COLOR_CYCLE)]
+
+def apply_days_axis(fig: go.Figure, times: pd.Series):
+    t = pd.to_datetime(times.dropna())
+    if t.empty:
+        return fig
+    t0 = t.min()
+    step = max(1, int(len(t) / 8))
+    tickvals = t[::step]
+    fig.update_layout(
+        xaxis=dict(title="Time", side="top"),
+        xaxis2=dict(
+            overlaying="x",
+            side="bottom",
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=[f"{((x - t0).total_seconds() / 86400):.1f}" for x in tickvals],
+            title="Days since start",
+            showgrid=False,
+        ),
+    )
+    fig.update_xaxes(matches="x", selector=dict(anchor="y"))
+    return fig
 
 def parse_time_robust(series: pd.Series) -> pd.Series:
     # Try ISO-like first (dayfirst=False), then dayfirst=True fallback
@@ -367,9 +416,63 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+st.caption(f"Active DAQ: {st.session_state.get('daq_name', 'N/A')} • DAQ Serial: {st.session_state.get('daq_serial', 'N/A')}")
+
+# ------------------------------------------------------------
+# Login gate (basic auth for pilot stage)
+# ------------------------------------------------------------
+if "is_authenticated" not in st.session_state:
+    st.session_state.is_authenticated = False
+
+if not st.session_state.is_authenticated:
+    st.subheader("Login")
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        login_btn = st.form_submit_button("Sign in")
+
+    if login_btn:
+        if username == "admin" and password == "timbershmproject123":
+            st.session_state.is_authenticated = True
+            st.success("Login successful.")
+            st.rerun()
+        else:
+            st.error("Invalid username or password.")
+    st.stop()
+
 # ------------------------------------------------------------
 # Sidebar: load + filters + plot toggles
 # ------------------------------------------------------------
+st.sidebar.header("0) Pre-flight checklist")
+daq_name = st.sidebar.text_input("DAQ model / ID", value=st.session_state.get("daq_name", "A3 Wireless 9753"))
+daq_serial = st.sidebar.text_input("DAQ serial number", value=st.session_state.get("daq_serial", ""))
+
+channel_config = {}
+for ch in range(17, 25):
+    default_name = SENSOR_MAP.get(ch, {"name": f"Input {ch}"})["name"]
+    with st.sidebar.expander(f"Input {ch} configuration", expanded=False):
+        sensor_type = st.selectbox(
+            f"Input {ch} sensor type",
+            SENSOR_OPTIONS,
+            index=SENSOR_OPTIONS.index("PMM on-board temp") if ch in [17, 19] else (SENSOR_OPTIONS.index("PMM MC") if ch in [18, 20] else SENSOR_OPTIONS.index("Aux")),
+            key=f"sensor_type_{ch}",
+        )
+        custom_label = st.text_input(f"Input {ch} display label", value=st.session_state.get(f"sensor_label_{ch}", default_name), key=f"sensor_label_{ch}")
+        sensor_serial = st.text_input(f"Input {ch} sensor serial", value=st.session_state.get(f"sensor_serial_{ch}", ""), key=f"sensor_serial_{ch}")
+
+        group_guess = "MC" if "mc" in sensor_type.lower() else ("TEMP" if "temp" in sensor_type.lower() else ("RH" if sensor_type == "RH" else "AUX"))
+        channel_config[ch] = {
+            "type": sensor_type,
+            "name": custom_label,
+            "sensor_serial": sensor_serial,
+            "group": group_guess,
+            "unit": SENSOR_MAP.get(ch, {}).get("unit", "%" if sensor_type == "PMM MC" else ""),
+        }
+
+st.session_state["channel_config"] = channel_config
+st.session_state["daq_name"] = daq_name
+st.session_state["daq_serial"] = daq_serial
+
 st.sidebar.header("1) Load data")
 uploaded = st.sidebar.file_uploader("Upload SMT CSV", type=["csv"])
 
@@ -554,7 +657,7 @@ def make_series(df_inp: pd.DataFrame, col: str, smooth=False):
 
 def plot_single_input(df_inp: pd.DataFrame, inp: int, show_converted=True, show_raw=False):
     name, unit, grp = label_for_input(inp)
-    base_color = COLOR.get(grp, COLOR["UNK"])
+    base_color = color_for_input(inp, grp)
 
     fig = go.Figure()
 
@@ -593,14 +696,15 @@ def plot_single_input(df_inp: pd.DataFrame, inp: int, show_converted=True, show_
         yaxis_title=ylab,
         height=420,
     )
+    fig = apply_days_axis(fig, df_inp["Time"])
     return fig
 
 def plot_overlay(df_all: pd.DataFrame, inputs: list, col="ConvertedNum"):
     fig = go.Figure()
-    for inp in inputs:
+    for idx, inp in enumerate(inputs):
         inp = int(inp)
         name, unit, grp = label_for_input(inp)
-        base_color = COLOR.get(grp, COLOR["UNK"])
+        base_color = color_for_input(inp, grp)
         sub = df_all[df_all["Input"] == inp].copy()
         if sub.empty:
             continue
@@ -610,7 +714,7 @@ def plot_overlay(df_all: pd.DataFrame, inputs: list, col="ConvertedNum"):
         fig.add_trace(go.Scatter(
             x=s["Time"], y=s[col],
             mode=("lines+markers" if marker_size > 0 else "lines"),
-            line=dict(width=line_width, color=base_color),
+            line=dict(width=line_width, color=base_color, dash=LINE_DASHES[idx % len(LINE_DASHES)]),
             marker=dict(size=marker_size, color=base_color),
             name=f"{inp} • {name} ({'Conv' if col=='ConvertedNum' else 'RAW'})",
         ))
@@ -621,6 +725,7 @@ def plot_overlay(df_all: pd.DataFrame, inputs: list, col="ConvertedNum"):
         yaxis_title=col,
         height=520,
     )
+    fig = apply_days_axis(fig, df_all[df_all["Input"].isin([int(x) for x in inputs])]["Time"])
     return fig
 
 # ------------------------------------------------------------
@@ -698,7 +803,7 @@ else:
 
     # Plot with outliers highlighted
     name, unit, grp = label_for_input(int(out_inp))
-    base_color = COLOR.get(grp, COLOR["UNK"])
+    base_color = color_for_input(int(out_inp), grp)
     fig = go.Figure()
 
     s = sub_out[["Time", out_col]].dropna().sort_values("Time").copy()
@@ -726,6 +831,7 @@ else:
         yaxis_title=f"{name} ({unit})" if unit else out_col,
         height=420,
     )
+    fig = apply_days_axis(fig, sub_out["Time"])
     st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
 
 st.markdown("<hr/>", unsafe_allow_html=True)
@@ -751,13 +857,16 @@ st.markdown(
 mc_col1, mc_col2, mc_col3, mc_col4 = st.columns([1.1, 1.1, 1.1, 1.2])
 
 with mc_col1:
-    mc_input = st.selectbox("MC channel", [x for x in [18, 20] if x in dfw["Input"].unique().tolist()] or sorted(dfw["Input"].unique().tolist()), index=0)
+    mc_input = st.selectbox("MC channel", sorted(dfw["Input"].unique().tolist()), index=0)
 with mc_col2:
     default_temp = 17 if int(mc_input) == 18 else 19
-    temp_input = st.selectbox("Temperature channel", [x for x in [17, 19, 5] if x in dfw["Input"].unique().tolist()] or sorted(dfw["Input"].unique().tolist()),
-                              index=0 if default_temp in dfw["Input"].unique().tolist() else 0)
+    temp_opts = sorted(dfw["Input"].unique().tolist())
+    temp_input = st.selectbox("Temperature channel", temp_opts,
+                              index=temp_opts.index(default_temp) if default_temp in temp_opts else 0)
 with mc_col3:
-    fallback_temp_input = st.selectbox("Fallback temp (if invalid)", [5, 17, 19], index=0)
+    fallback_opts = ["Custom"] + [str(x) for x in sorted(dfw["Input"].unique().tolist())]
+    fallback_choice = st.selectbox("Fallback temp (if invalid)", fallback_opts, index=1 if len(fallback_opts) > 1 else 0)
+    fallback_temp_input = int(st.text_input("Fallback temp custom input", value="5")) if fallback_choice == "Custom" else int(fallback_choice)
 with mc_col4:
     invalid_temp_if = st.number_input("Treat temp as invalid if ≤", value=-50.0, step=1.0)
 
@@ -852,6 +961,7 @@ else:
         yaxis_title="Moisture Content (%)",
         height=520,
     )
+    fig = apply_days_axis(fig, out["Time"])
     st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
 
     # Quick numeric check (how close?)
